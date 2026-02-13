@@ -1,0 +1,6 @@
+/* 地図のコンテナを正しく表示するための最小限のスタイル */
+.leaflet-container {
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
