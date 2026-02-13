@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Project Documentation (Not required for app behavior)
+*.md
+!README.md
+
+# Temporary files
+temp-app/
