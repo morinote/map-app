@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap } from 'react-leaflet';
-import { Trash2, Plus, MapPin, Filter, Layers, Menu, X, Save, Tag, XCircle, ChevronRight, CheckSquare, Square, Search } from 'lucide-react';
+import { Trash2, Plus, MapPin, Filter, Menu, X, Save, Tag, XCircle, ChevronRight, CheckSquare, Square } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-control-geocoder/dist/Control.Geocoder.css';
@@ -287,7 +287,7 @@ function App() {
             ))}
             {newMarkerPos && (
               <Marker position={newMarkerPos}>
-                <Popup closeOnClick={false} onClose={() => setNewMarkerPos(null)}>
+                <Popup closeOnClick={false} eventHandlers={{ remove: () => setNewMarkerPos(null) }}>
                   <div className="p-2 min-w-[200px]">
                     <h3 className="font-bold mb-3 flex items-center gap-2 text-blue-600 border-b pb-2"><Plus size={18} /> 新しい地点</h3>
                     <div className="space-y-4">
