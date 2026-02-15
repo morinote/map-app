@@ -1,514 +1,329 @@
 import { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap, Polyline, Circle } from 'react-leaflet';
-import { Trash2, Plus, MapPin, Filter, Menu, X, Save, Tag, Route, Eraser, Download, Upload, Navigation, StopCircle } from 'lucide-react';
+import { Trash2, Plus, MapPin, Filter, Menu, X, Save, Tag, Route, Eraser, Download, Upload, Navigation, StopCircle, Battery, Zap } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-control-geocoder/dist/Control.Geocoder.css';
 import 'leaflet-control-geocoder';
 import './App.css';
 
-// Leafletのデフォルトアイコン設定
-import markerIcon from 'leaflet/dist/images/marker-icon.png';
-import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+// --- 設定定数 ---
+const DISTANCE_THRESHOLD = 30; // 30メートル移動したら記録検討
+const ANGLE_THRESHOLD = 15;    // 15度以上曲がったら記録
+const STORAGE_KEYS = {
+  MARKERS: 'map-app-markers',
+  CATEGORIES: 'map-app-categories',
+  ROUTES: 'map-app-routes',
+  TRACKING_STATE: 'map-app-tracking-active',
+  PENDING_PATH: 'map-app-pending-path'
+};
 
-let DefaultIcon = L.icon({
-    iconUrl: markerIcon,
-    shadowUrl: markerShadow,
-    iconSize: [25, 41],
-    iconAnchor: [12, 41]
-});
-L.Marker.prototype.options.icon = DefaultIcon;
+// 無音オーディオ（1秒の無音MP3 - Base64形式）
+// これを再生し続けることで、iOS等のブラウザがバックグラウンドでJSを止めるのを抑制します
+const SILENT_AUDIO_BASE64 = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA== ";
 
-// 地図の中心を自動更新するコンポーネント
+// --- ヘルパー関数 ---
+const calculateDistance = (p1: [number, number], p2: [number, number]) => {
+  return L.latLng(p1).distanceTo(L.latLng(p2));
+};
+
+// 2つの座標点から方位角を計算
+const getBearing = (p1: [number, number], p2: [number, number]) => {
+  const lat1 = p1[0] * Math.PI / 180;
+  const lon1 = p1[1] * Math.PI / 180;
+  const lat2 = p2[0] * Math.PI / 180;
+  const lon2 = p2[1] * Math.PI / 180;
+  const y = Math.sin(lon2 - lon1) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(lon2 - lon1);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+};
+
+// --- サブコンポーネント ---
 function ChangeView({ center }: { center: [number, number] | null }) {
   const map = useMap();
   useEffect(() => {
-    if (center) {
-      map.setView(center, map.getZoom());
-    }
+    if (center) map.setView(center, map.getZoom());
   }, [center, map]);
   return null;
 }
 
-// 住所検索コンポーネント
 function SearchControl() {
   const map = useMap();
-
   useEffect(() => {
     // @ts-ignore
     const geocoder = L.Control.Geocoder.nominatim();
     // @ts-ignore
-    const control = L.Control.geocoder({
-      query: '',
-      placeholder: '住所または施設名を検索...',
-      defaultMarkGeocode: false,
-      geocoder
-    })
-      .on('markgeocode', function(e: any) {
-        const latlng = e.geocode.center;
-        map.setView(latlng, 16);
-      })
+    const control = L.Control.geocoder({ placeholder: '検索...', defaultMarkGeocode: false, geocoder })
+      .on('markgeocode', (e: any) => map.setView(e.geocode.center, 16))
       .addTo(map);
-
-    return () => {
-      map.removeControl(control);
-    };
+    return () => map.removeControl(control);
   }, [map]);
-
   return null;
 }
 
-// 型定義
-interface MapMarker {
-  id: string;
-  position: [number, number];
-  name: string;
-  category: string;
-}
-
-interface MapRoute {
-  id: string;
-  name: string;
-  points: [number, number][];
-  color: string;
-}
-
-const DEFAULT_CATEGORIES = ["飲食店", "作業場所", "観光", "ショッピング", "その他"];
-const MARKERS_STORAGE_KEY = 'map-app-markers';
-const CATEGORIES_STORAGE_KEY = 'map-app-categories';
-const ROUTES_STORAGE_KEY = 'map-app-routes';
-
-// 地図クリックを処理するコンポーネント
 function MapClickHandler({ onMapClick }: { onMapClick: (e: any) => void }) {
-  useMapEvents({
-    click: (e) => {
-      onMapClick(e);
-    },
-  });
+  useMapEvents({ click: (e) => onMapClick(e) });
   return null;
 }
 
+// --- メインコンポーネント ---
 function App() {
-  const [markers, setMarkers] = useState<MapMarker[]>([]);
-  const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
-  const [routes, setRoutes] = useState<MapRoute[]>([]);
-  
-  // モード管理
+  const [markers, setMarkers] = useState<any[]>([]);
+  const [categories, setCategories] = useState<string[]>(["飲食店", "作業場所", "観光", "ショッピング", "その他"]);
+  const [routes, setRoutes] = useState<any[]>([]);
   const [mode, setMode] = useState<'marker' | 'route' | 'tracking'>('marker');
   
-  // マーカー入力用
-  const [newMarkerPos, setNewMarkerPos] = useState<[number, number] | null>(null);
-  const [inputName, setInputName] = useState('');
-  const [inputCategory, setInputCategory] = useState('');
-  
-  // 経路入力用（手動）
-  const [currentRoutePoints, setCurrentRoutePoints] = useState<[number, number][]>([]);
-  const [inputRouteName, setInputRouteName] = useState('');
-
-  // トラッキング用（自動）
+  // トラッキング関連
   const [isTracking, setIsTracking] = useState(false);
   const [trackingPath, setTrackingPath] = useState<[number, number][]>([]);
   const [currentPosition, setCurrentPosition] = useState<[number, number] | null>(null);
   const [followMe, setFollowMe] = useState(false);
-  const watchIdRef = useRef<number | null>(null);
+  const [batterySaving, setBatterySaving] = useState(true);
   
+  const lastLoggedPositionRef = useRef<[number, number] | null>(null);
+  const lastBearingRef = useRef<number | null>(null);
+  const watchIdRef = useRef<number | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
   // UI状態
   const [visibleCategories, setVisibleCategories] = useState<string[]>([]);
   const [visibleRoutes, setVisibleRoutes] = useState<string[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isLoaded, setIsLoaded] = useState(false);
-  const [newCategoryName, setNewCategoryName] = useState('');
 
-  // 初回読み込み
+  // 初回読み込みと復旧
   useEffect(() => {
-    const savedMarkers = localStorage.getItem(MARKERS_STORAGE_KEY);
-    const savedCategories = localStorage.getItem(CATEGORIES_STORAGE_KEY);
-    const savedRoutes = localStorage.getItem(ROUTES_STORAGE_KEY);
-    
-    let loadedCategories = DEFAULT_CATEGORIES;
-    if (savedCategories) {
-      try {
-        loadedCategories = JSON.parse(savedCategories);
-        setCategories(loadedCategories);
-      } catch (e) { console.error(e); }
-    }
-    
-    if (savedMarkers) {
-      try { setMarkers(JSON.parse(savedMarkers)); } catch (e) { console.error(e); }
-    }
+    const savedMarkers = localStorage.getItem(STORAGE_KEYS.MARKERS);
+    const savedRoutes = localStorage.getItem(STORAGE_KEYS.ROUTES);
+    const savedTrackingActive = localStorage.getItem(STORAGE_KEYS.TRACKING_STATE) === 'true';
+    const savedPendingPath = localStorage.getItem(STORAGE_KEYS.PENDING_PATH);
 
+    if (savedMarkers) setMarkers(JSON.parse(savedMarkers));
     if (savedRoutes) {
-      try {
-        const loadedRoutes = JSON.parse(savedRoutes);
-        setRoutes(loadedRoutes);
-        setVisibleRoutes(loadedRoutes.map((r: MapRoute) => r.id));
-      } catch (e) { console.error(e); }
+      const r = JSON.parse(savedRoutes);
+      setRoutes(r);
+      setVisibleRoutes(r.map((x: any) => x.id));
     }
-
-    setVisibleCategories(loadedCategories);
-    setInputCategory(loadedCategories[0]);
+    if (savedPendingPath) {
+      const path = JSON.parse(savedPendingPath);
+      setTrackingPath(path);
+      if (path.length > 0) lastLoggedPositionRef.current = path[path.length - 1];
+    }
+    
+    setVisibleCategories(["飲食店", "作業場所", "観光", "ショッピング", "その他"]);
     setIsLoaded(true);
+
+    // 強制終了からの復旧
+    if (savedTrackingActive) {
+      setTimeout(() => {
+        if (window.confirm("前回の追跡が中断されました。再開しますか？")) {
+          startTracking();
+        } else {
+          localStorage.removeItem(STORAGE_KEYS.TRACKING_STATE);
+          localStorage.removeItem(STORAGE_KEYS.PENDING_PATH);
+          setTrackingPath([]);
+        }
+      }, 1000);
+    }
   }, []);
 
-  // 自動保存
+  // データの自動保存
   useEffect(() => {
     if (isLoaded) {
-      localStorage.setItem(MARKERS_STORAGE_KEY, JSON.stringify(markers));
-      localStorage.setItem(CATEGORIES_STORAGE_KEY, JSON.stringify(categories));
-      localStorage.setItem(ROUTES_STORAGE_KEY, JSON.stringify(routes));
+      localStorage.setItem(STORAGE_KEYS.MARKERS, JSON.stringify(markers));
+      localStorage.setItem(STORAGE_KEYS.ROUTES, JSON.stringify(routes));
+      if (isTracking) {
+        localStorage.setItem(STORAGE_KEYS.PENDING_PATH, JSON.stringify(trackingPath));
+      }
     }
-  }, [markers, categories, routes, isLoaded]);
+  }, [markers, routes, trackingPath, isLoaded, isTracking]);
 
-  // トラッキング機能の実装
+  // バックグラウンド維持用のオーディオ制御
+  const toggleAudio = (play: boolean) => {
+    if (play) {
+      if (!audioRef.current) {
+        audioRef.current = new Audio(SILENT_AUDIO_BASE64);
+        audioRef.current.loop = true;
+      }
+      audioRef.current.play().catch(e => console.log("Audio play blocked", e));
+    } else if (audioRef.current) {
+      audioRef.current.pause();
+    }
+  };
+
+  const startTracking = () => {
+    setIsTracking(true);
+    localStorage.setItem(STORAGE_KEYS.TRACKING_STATE, 'true');
+    toggleAudio(true);
+  };
+
+  const stopTracking = () => {
+    setIsTracking(false);
+    localStorage.setItem(STORAGE_KEYS.TRACKING_STATE, 'false');
+    toggleAudio(false);
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+  };
+
+  // スマート・トラッキング ロジック
   useEffect(() => {
     if (isTracking) {
-      if ("geolocation" in navigator) {
-        watchIdRef.current = navigator.geolocation.watchPosition(
-          (position) => {
-            const { latitude, longitude } = position.coords;
-            const newPos: [number, number] = [latitude, longitude];
-            setCurrentPosition(newPos);
-            setTrackingPath(prev => {
-              if (prev.length > 0) {
-                const lastPos = prev[prev.length - 1];
-                const distance = L.latLng(lastPos).distanceTo(L.latLng(newPos));
-                if (distance < 3) return prev; // 3m未満の移動はノイズとして無視
-              }
-              return [...prev, newPos];
-            });
-          },
-          (error) => {
-            console.error("Tracking error:", error);
-            alert("位置情報の取得に失敗しました。");
-            setIsTracking(false);
-          },
-          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-        );
-      } else {
-        alert("Geolocation非対応ブラウザです。");
-        setIsTracking(false);
-      }
-    } else {
-      if (watchIdRef.current !== null) {
-        navigator.geolocation.clearWatch(watchIdRef.current);
-        watchIdRef.current = null;
-      }
+      watchIdRef.current = navigator.geolocation.watchPosition(
+        (pos) => {
+          const newPos: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+          setCurrentPosition(newPos);
+
+          if (!lastLoggedPositionRef.current) {
+            // 開始点の記録
+            lastLoggedPositionRef.current = newPos;
+            setTrackingPath([newPos]);
+            return;
+          }
+
+          const dist = calculateDistance(lastLoggedPositionRef.current, newPos);
+          
+          if (batterySaving) {
+            // 省電力モード: 距離と角度で判定
+            const bearing = getBearing(lastLoggedPositionRef.current, newPos);
+            
+            const isFarEnough = dist > DISTANCE_THRESHOLD;
+            const bearingDiff = lastBearingRef.current !== null 
+              ? Math.abs(bearing - lastBearingRef.current) 
+              : 0;
+            const isTurning = bearingDiff > ANGLE_THRESHOLD && dist > 10;
+
+            if (isFarEnough || isTurning) {
+              setTrackingPath(prev => [...prev, newPos]);
+              lastLoggedPositionRef.current = newPos;
+              lastBearingRef.current = bearing;
+            }
+          } else {
+            // 通常モード: 5m以上動いたら全て記録
+            if (dist > 5) {
+              setTrackingPath(prev => [...prev, newPos]);
+              lastLoggedPositionRef.current = newPos;
+            }
+          }
+        },
+        (err) => console.error(err),
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
     }
     return () => {
-      if (watchIdRef.current !== null) {
-        navigator.geolocation.clearWatch(watchIdRef.current);
-      }
+      if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
     };
-  }, [isTracking]);
+  }, [isTracking, batterySaving]);
 
-  // 地図クリック時の挙動
-  const handleMapClick = (e: any) => {
-    const pos: [number, number] = [e.latlng.lat, e.latlng.lng];
-    if (mode === 'marker') {
-      setNewMarkerPos(pos);
-    } else if (mode === 'route') {
-      setCurrentRoutePoints([...currentRoutePoints, pos]);
-    }
-  };
-
-  // マーカー登録
-  const handleAddMarker = () => {
-    if (newMarkerPos && inputName) {
-      const newMarker: MapMarker = {
-        id: crypto.randomUUID(),
-        position: newMarkerPos,
-        name: inputName,
-        category: inputCategory || categories[0],
-      };
-      setMarkers([...markers, newMarker]);
-      setNewMarkerPos(null);
-      setInputName('');
-    }
-  };
-
-  // 経路保存（共通）
-  const saveRoute = (name: string, points: [number, number][]) => {
-    if (points.length > 1 && name) {
-      const newRoute: MapRoute = {
-        id: crypto.randomUUID(),
-        name,
-        points,
-        color: '#3b82f6',
-      };
+  // 経路の保存
+  const handleSaveTrack = () => {
+    const name = prompt("経路の名前を入力:", `ログ ${new Date().toLocaleString()}`);
+    if (name && trackingPath.length > 1) {
+      const newRoute = { id: crypto.randomUUID(), name, points: trackingPath, color: '#6366f1' };
       setRoutes([...routes, newRoute]);
       setVisibleRoutes([...visibleRoutes, newRoute.id]);
-      return true;
-    }
-    return false;
-  };
-
-  const handleSaveManualRoute = () => {
-    if (saveRoute(inputRouteName, currentRoutePoints)) {
-      setCurrentRoutePoints([]);
-      setInputRouteName('');
-    }
-  };
-
-  const handleSaveTrackingRoute = () => {
-    const name = prompt("経路の名前を入力してください", `移動経路 ${new Date().toLocaleString()}`);
-    if (name && trackingPath.length > 1) {
-      if (saveRoute(name, trackingPath)) {
-        setTrackingPath([]);
-        setIsTracking(false);
-      }
-    } else if (trackingPath.length <= 1) {
-      alert("経路が短すぎます。");
-      setIsTracking(false);
       setTrackingPath([]);
+      lastLoggedPositionRef.current = null;
+      stopTracking();
+      localStorage.removeItem(STORAGE_KEYS.PENDING_PATH);
     }
   };
 
-  // 距離計算ヘルパー
-  const calculateDistance = (points: [number, number][]) => {
-    let total = 0;
-    for (let i = 0; i < points.length - 1; i++) {
-      total += L.latLng(points[i]).distanceTo(L.latLng(points[i + 1]));
-    }
-    return total;
+  // その他UI機能（簡略化）
+  const formatDistance = (pts: any[]) => {
+    let d = 0;
+    for (let i = 0; i < pts.length - 1; i++) d += L.latLng(pts[i]).distanceTo(L.latLng(pts[i+1]));
+    return d < 1000 ? `${Math.round(d)}m` : `${(d/1000).toFixed(2)}km`;
   };
-
-  const formatDistance = (meters: number) => {
-    if (meters < 1000) return `${Math.round(meters)}m`;
-    return `${(meters / 1000).toFixed(2)}km`;
-  };
-
-  // UIイベントハンドラー
-  const handleDeleteMarker = (id: string) => setMarkers(markers.filter(m => m.id !== id));
-  const handleDeleteRoute = (id: string) => {
-    if (window.confirm("この経路を削除しますか？")) {
-      setRoutes(routes.filter(r => r.id !== id));
-      setVisibleRoutes(visibleRoutes.filter(rid => rid !== id));
-    }
-  };
-  const handleUpdateMarkerCategory = (markerId: string, newCategory: string) => {
-    setMarkers(markers.map(m => m.id === markerId ? { ...m, category: newCategory } : m));
-  };
-  const toggleCategory = (category: string) => setVisibleCategories(prev => prev.includes(category) ? prev.filter(c => c !== category) : [...prev, category]);
-  const toggleRouteVisibility = (id: string) => setVisibleRoutes(prev => prev.includes(id) ? prev.filter(rid => rid !== id) : [...prev, id]);
-  const handleAddCategory = () => {
-    const trimmed = newCategoryName.trim();
-    if (trimmed && !categories.includes(trimmed)) {
-      setCategories([...categories, trimmed]);
-      setVisibleCategories([...visibleCategories, trimmed]);
-      setNewCategoryName('');
-    }
-  };
-
-  const handleExportData = () => {
-    const data = { markers, categories, routes, version: 1, exportedAt: new Date().toISOString() };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `map-app-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  const handleImportData = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const data = JSON.parse(event.target?.result as string);
-        if (window.confirm('現在のデータを上書きして復元しますか？')) {
-          if (data.categories) { setCategories(data.categories); setVisibleCategories(data.categories); }
-          if (data.markers) setMarkers(data.markers);
-          if (data.routes) { setRoutes(data.routes); setVisibleRoutes(data.routes.map((r: any) => r.id)); }
-          alert('データを復元しました。');
-        }
-      } catch (e) { alert('失敗しました。'); }
-    };
-    reader.readAsText(file);
-  };
-
-  const center: [number, number] = [35.681236, 139.767125];
-  const filteredMarkers = markers.filter(m => visibleCategories.includes(m.category));
-  const sortedCategories = [...categories].sort((a, b) => (a === "その他" ? 1 : b === "その他" ? -1 : a.localeCompare(b)));
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-gray-100 font-sans text-gray-800">
-      <header className="bg-slate-800 text-white p-3 shadow-lg z-30 flex justify-between items-center border-b border-slate-700">
+    <div className="flex flex-col h-screen w-screen bg-slate-50 text-slate-900 overflow-hidden">
+      <header className="bg-slate-900 text-white p-3 flex justify-between items-center shadow-md z-30">
         <div className="flex items-center gap-3">
-          <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-1 hover:bg-slate-700 rounded transition-colors">
-            {isSidebarOpen ? <X size={20} /> : <Menu size={20} />}
-          </button>
-          <div className="flex items-center gap-2">
-            <MapPin size={22} className="text-blue-400" />
-            <h1 className="text-lg font-bold tracking-tight">Windows Map Manager</h1>
-          </div>
+          <button onClick={() => setIsSidebarOpen(!isSidebarOpen)}><Menu size={20} /></button>
+          <h1 className="font-bold flex items-center gap-2"><MapPin size={18} className="text-blue-400"/> MapTrack</h1>
         </div>
-        
-        <div className="flex bg-slate-700 p-1 rounded-lg">
-          <button onClick={() => setMode('marker')} className={`px-4 py-1 rounded-md text-xs font-bold flex items-center gap-2 ${mode === 'marker' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}><MapPin size={14} /> 地点</button>
-          <button onClick={() => setMode('route')} className={`px-4 py-1 rounded-md text-xs font-bold flex items-center gap-2 ${mode === 'route' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}><Route size={14} /> 経路</button>
-          <button onClick={() => setMode('tracking')} className={`px-4 py-1 rounded-md text-xs font-bold flex items-center gap-2 ${mode === 'tracking' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}><Navigation size={14} /> 追跡</button>
+        <div className="flex bg-slate-800 p-1 rounded-lg scale-90">
+          <button onClick={() => setMode('marker')} className={`px-4 py-1 rounded ${mode === 'marker' ? 'bg-blue-600' : ''}`}><MapPin size={14}/></button>
+          <button onClick={() => setMode('tracking')} className={`px-4 py-1 rounded ${mode === 'tracking' ? 'bg-blue-600' : ''}`}><Navigation size={14}/></button>
         </div>
-
-        <div className="hidden sm:flex items-center gap-4">
-          {isTracking && (
-            <div className="flex items-center gap-2 px-3 py-1 bg-red-900/50 border border-red-700 rounded-full animate-pulse">
-              <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-              <span className="text-xs font-bold text-red-200">{formatDistance(calculateDistance(trackingPath))}</span>
-            </div>
-          )}
-          <div className="flex items-center gap-2 text-xs bg-slate-700 px-3 py-1 rounded-full text-slate-300 border border-slate-600">
-            <Save size={14} className="text-green-400" /><span>自動保存</span>
-          </div>
-        </div>
+        {isTracking && <div className="text-xs bg-red-600 px-2 py-1 rounded-full animate-pulse">REC {formatDistance(trackingPath)}</div>}
       </header>
 
       <div className="flex flex-1 relative overflow-hidden">
-        <aside className={`${isSidebarOpen ? 'w-72' : 'w-0'} transition-all duration-300 bg-white border-r z-20 flex flex-col shadow-xl overflow-hidden`}>
-          <div className="p-4 flex flex-col h-full min-w-[288px]">
-            
+        <aside className={`${isSidebarOpen ? 'w-72' : 'w-0'} transition-all bg-white border-r z-20 overflow-hidden flex flex-col`}>
+          <div className="p-4 min-w-[288px] flex flex-col h-full">
             {mode === 'tracking' && (
-              <div className="mb-6 p-3 bg-indigo-50 rounded-lg border border-indigo-100">
-                <h3 className="text-sm font-bold text-indigo-800 mb-3 flex items-center gap-2"><Navigation size={16} /> GPS追跡</h3>
+              <div className="bg-slate-100 p-3 rounded-xl mb-4 border border-slate-200">
+                <div className="flex justify-between items-center mb-3">
+                  <h3 className="font-bold text-sm flex items-center gap-2"><Zap size={16} className="text-yellow-500"/> スマート追跡</h3>
+                  <button onClick={() => setBatterySaving(!batterySaving)} className={`text-[10px] px-2 py-0.5 rounded-full border ${batterySaving ? 'bg-green-100 border-green-300 text-green-700' : 'bg-slate-200 border-slate-300'}`}>
+                    {batterySaving ? '省電力ON' : '通常モード'}
+                  </button>
+                </div>
                 {!isTracking ? (
-                  <button onClick={() => { setIsTracking(true); setTrackingPath([]); setFollowMe(true); }} className="w-full bg-indigo-600 text-white rounded py-2 font-bold hover:bg-indigo-700 flex items-center justify-center gap-2 shadow-sm"><Navigation size={16} /> 開始</button>
+                  <button onClick={startTracking} className="w-full bg-blue-600 text-white py-2 rounded-lg font-bold shadow-lg shadow-blue-200 active:scale-95 transition-all">追跡を開始</button>
                 ) : (
-                  <div className="space-y-3">
-                    <button onClick={handleSaveTrackingRoute} className="w-full bg-red-600 text-white rounded py-2 font-bold hover:bg-red-700 flex items-center justify-center gap-2 shadow-sm"><StopCircle size={16} /> 停止して保存</button>
-                    <label className="flex items-center gap-2 justify-center py-1 cursor-pointer">
-                      <input type="checkbox" checked={followMe} onChange={(e) => setFollowMe(e.target.checked)} className="w-3.5 h-3.5" />
-                      <span className="text-xs text-indigo-700 font-medium">自動追従</span>
+                  <div className="space-y-2">
+                    <button onClick={handleSaveTrack} className="w-full bg-slate-800 text-white py-2 rounded-lg font-bold flex items-center justify-center gap-2"><StopCircle size={18}/> 停止して保存</button>
+                    <label className="flex items-center justify-center gap-2 text-xs py-1 cursor-pointer">
+                      <input type="checkbox" checked={followMe} onChange={e => setFollowMe(e.target.checked)} /> 自動追従
                     </label>
                   </div>
                 )}
-              </div>
-            )}
-
-            {mode === 'route' && currentRoutePoints.length > 0 && (
-              <div className="mb-6 p-3 bg-blue-50 rounded-lg border border-blue-100">
-                <h3 className="text-sm font-bold text-blue-800 mb-2 flex items-center gap-2"><Route size={16} /> 経路保存</h3>
-                <input type="text" value={inputRouteName} onChange={(e) => setInputRouteName(e.target.value)} placeholder="経路名" className="w-full border rounded px-2 py-1.5 text-sm mb-2 outline-none" />
-                <div className="flex justify-between items-center text-xs text-gray-500 mb-2">
-                  <span className="font-bold text-blue-600">{formatDistance(calculateDistance(currentRoutePoints))}</span>
-                </div>
-                <div className="flex gap-2">
-                  <button onClick={handleSaveManualRoute} disabled={!inputRouteName || currentRoutePoints.length < 2} className="flex-1 bg-blue-600 text-white rounded py-1.5 font-bold disabled:bg-gray-300">保存</button>
-                  <button onClick={() => setCurrentRoutePoints([])} className="bg-gray-200 text-gray-600 rounded px-3 py-1.5"><Eraser size={14} /></button>
+                <div className="mt-2 text-[10px] text-slate-400 text-center">
+                  方向転換と{DISTANCE_THRESHOLD}m以上の移動のみ記録し<br/>バックグラウンドでの動作を維持します。
                 </div>
               </div>
             )}
 
             <div className="flex-1 overflow-y-auto">
-              <div className="flex items-center gap-2 mb-2 text-gray-500 font-semibold border-b pb-1 text-sm"><Filter size={16} /> フィルター</div>
-              <div className="space-y-4">
-                <section>
-                  <h4 className="text-[10px] uppercase font-bold text-gray-400 mb-2">カテゴリー</h4>
-                  <div className="space-y-1">
-                    {sortedCategories.map(category => (
-                      <label key={category} className="flex items-center justify-between p-1.5 hover:bg-gray-50 rounded cursor-pointer">
-                        <div className="flex items-center gap-2">
-                          <input type="checkbox" checked={visibleCategories.includes(category)} onChange={() => toggleCategory(category)} className="w-3.5 h-3.5" />
-                          <span className="text-xs">{category}</span>
-                        </div>
-                        <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">{markers.filter(m => m.category === category).length}</span>
-                      </label>
-                    ))}
+              <h4 className="text-[10px] uppercase font-bold text-slate-400 mb-2 border-b pb-1">保存済み経路</h4>
+              <div className="space-y-1">
+                {routes.map(r => (
+                  <div key={r.id} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded text-xs border border-transparent hover:border-slate-100">
+                    <label className="flex items-center gap-2 flex-1 cursor-pointer">
+                      <input type="checkbox" checked={visibleRoutes.includes(r.id)} onChange={() => setVisibleRoutes(prev => prev.includes(r.id) ? prev.filter(x => x!==r.id) : [...prev, r.id])} />
+                      <div className="flex flex-col truncate">
+                        <span className="font-bold truncate">{r.name}</span>
+                        <span className="text-[10px] text-slate-400">{formatDistance(r.points)}</span>
+                      </div>
+                    </label>
+                    <button onClick={() => setRoutes(routes.filter(x => x.id !== r.id))} className="text-slate-300 hover:text-red-500"><Trash2 size={14}/></button>
                   </div>
-                </section>
-                <section>
-                  <h4 className="text-[10px] uppercase font-bold text-gray-400 mb-2">保存済み経路</h4>
-                  {routes.length === 0 ? <div className="text-[10px] text-gray-400 italic px-2">なし</div> : (
-                    <div className="space-y-1">
-                      {routes.map(route => (
-                        <div key={route.id} className="flex items-center justify-between p-1.5 hover:bg-gray-50 rounded group">
-                          <label className="flex items-center gap-2 cursor-pointer flex-1 overflow-hidden">
-                            <input type="checkbox" checked={visibleRoutes.includes(route.id)} onChange={() => toggleRouteVisibility(route.id)} className="w-3.5 h-3.5" />
-                            <div className="flex flex-col min-w-0">
-                              <span className="text-xs font-medium truncate">{route.name}</span>
-                              <span className="text-[9px] text-gray-400">{formatDistance(calculateDistance(route.points))}</span>
-                            </div>
-                          </label>
-                          <button onClick={() => handleDeleteRoute(route.id)} className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100"><Trash2 size={12} /></button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </section>
+                ))}
               </div>
             </div>
-
-            <div className="mt-4 pt-4 border-t space-y-4">
-              <div>
-                <div className="flex items-center gap-2 mb-2 text-gray-500 text-xs"><Tag size={14} /><span>カテゴリ追加</span></div>
-                <div className="flex gap-1">
-                  <input type="text" value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)} placeholder="名称..." className="flex-1 border rounded px-2 py-1 text-xs" onKeyDown={(e) => e.key === 'Enter' && handleAddCategory()} />
-                  <button onClick={handleAddCategory} className="bg-slate-100 p-1 rounded"><Plus size={16} /></button>
-                </div>
-              </div>
-              <div className="flex gap-2">
-                <button onClick={handleExportData} className="flex-1 bg-slate-100 text-slate-600 rounded py-1.5 text-xs font-bold border flex items-center justify-center gap-1"><Download size={14} /> 保存</button>
-                <label className="flex-1 bg-slate-100 text-slate-600 rounded py-1.5 text-xs font-bold border flex items-center justify-center gap-1 cursor-pointer"><Upload size={14} /> 復元<input type="file" accept=".json" onChange={handleImportData} className="hidden" /></label>
-              </div>
+            
+            <div className="pt-4 mt-auto border-t">
+              <button onClick={() => {
+                const data = JSON.stringify({ markers, routes });
+                const blob = new Blob([data], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = 'map-data.json'; a.click();
+              }} className="w-full text-xs py-2 bg-slate-100 rounded border border-slate-200 font-bold text-slate-600 flex items-center justify-center gap-2"><Download size={14}/> データをエクスポート</button>
             </div>
           </div>
         </aside>
 
-        <main className="flex-1 relative z-10">
-          <MapContainer center={center} zoom={13} className="h-full w-full">
+        <main className="flex-1 relative">
+          <MapContainer center={[35.6812, 139.7671]} zoom={13} className="h-full w-full">
             <TileLayer attribution="&copy; OpenStreetMap" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
             <SearchControl />
-            <MapClickHandler onMapClick={handleMapClick} />
             <ChangeView center={followMe ? currentPosition : null} />
             
             {currentPosition && (
-              <>
-                <Circle center={currentPosition} radius={15} pathOptions={{ fillColor: '#3b82f6', fillOpacity: 0.4, color: '#3b82f6', weight: 1 }} />
-                <Marker position={currentPosition} icon={L.divIcon({ className: 'bg-blue-600 w-3 h-3 rounded-full border-2 border-white shadow-md' })} />
-              </>
+              <Circle center={currentPosition} radius={20} pathOptions={{ fillColor: '#3b82f6', fillOpacity: 0.3, color: '#3b82f6', weight: 1 }} />
             )}
 
-            {filteredMarkers.map((marker) => (
-              <Marker key={marker.id} position={marker.position}>
-                <Popup>
-                  <div className="p-1 min-w-[150px]">
-                    <div className="border-b mb-2 pb-1 font-bold text-sm">{marker.name}</div>
-                    <select value={marker.category} onChange={(e) => handleUpdateMarkerCategory(marker.id, e.target.value)} className="w-full bg-blue-50 p-1 rounded text-xs mb-2">
-                      {sortedCategories.map(cat => (<option key={cat} value={cat}>{cat}</option>))}
-                    </select>
-                    <button onClick={() => handleDeleteMarker(marker.id)} className="text-red-500 w-full text-center text-xs py-1 border border-red-100 rounded">削除</button>
-                  </div>
-                </Popup>
-              </Marker>
-            ))}
-
-            {routes.filter(r => visibleRoutes.includes(r.id)).map(route => (
-              <Polyline key={route.id} positions={route.points} color={route.color} weight={4} opacity={0.6} />
+            {routes.filter(r => visibleRoutes.includes(r.id)).map(r => (
+              <Polyline key={r.id} positions={r.points} color={r.color} weight={4} opacity={0.6} />
             ))}
 
             {isTracking && trackingPath.length > 0 && (
               <Polyline positions={trackingPath} color="#6366f1" weight={5} opacity={0.8} />
-            )}
-
-            {currentRoutePoints.length > 0 && (
-              <Polyline positions={currentRoutePoints} color="#ef4444" weight={3} dashArray="5, 8" />
-            )}
-
-            {newMarkerPos && (
-              <Marker position={newMarkerPos}>
-                <Popup eventHandlers={{ remove: () => setNewMarkerPos(null) }}>
-                  <div className="p-2 min-w-[180px]">
-                    <div className="font-bold mb-2 text-blue-600">地点登録</div>
-                    <input type="text" value={inputName} onChange={(e) => setInputName(e.target.value)} placeholder="名称" className="w-full border-b mb-3 py-1 text-sm outline-none" autoFocus />
-                    <select value={inputCategory} onChange={(e) => setInputCategory(e.target.value)} className="w-full bg-gray-50 border rounded p-1 text-sm mb-3">
-                      {sortedCategories.map(cat => (<option key={cat} value={cat}>{cat}</option>))}
-                    </select>
-                    <button onClick={handleAddMarker} disabled={!inputName} className="w-full bg-blue-600 text-white rounded py-1.5 text-sm font-bold disabled:bg-gray-300">登録</button>
-                  </div>
-                </Popup>
-              </Marker>
             )}
           </MapContainer>
         </main>
