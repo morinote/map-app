@@ -8,9 +8,9 @@ import 'leaflet-control-geocoder';
 import './App.css';
 
 // --- 設定定数 ---
-const DISTANCE_THRESHOLD = 30; // 30メートル移動したら記録検討
-const ANGLE_THRESHOLD = 15;    // 15度以上曲がったら記録
-const ACCURACY_THRESHOLD = 60; // 誤差60m以上のデータは無視（精度フィルター）
+const DISTANCE_THRESHOLD = 30; 
+const ANGLE_THRESHOLD = 15;    
+const ACCURACY_THRESHOLD = 60; 
 const STORAGE_KEYS = {
   MARKERS: 'map-app-markers',
   CATEGORIES: 'map-app-categories',
@@ -19,10 +19,8 @@ const STORAGE_KEYS = {
   PENDING_PATH: 'map-app-pending-path'
 };
 
-// 無音オーディオ（1秒の無音MP3 - Base64形式）
 const SILENT_AUDIO_BASE64 = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA== ";
 
-// --- ヘルパー関数 ---
 const calculateDistance = (p1: [number, number], p2: [number, number]) => {
   return L.latLng(p1).distanceTo(L.latLng(p2));
 };
@@ -37,7 +35,6 @@ const getBearing = (p1: [number, number], p2: [number, number]) => {
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 };
 
-// --- サブコンポーネント ---
 function ChangeView({ center }: { center: [number, number] | null }) {
   const map = useMap();
   useEffect(() => {
@@ -65,10 +62,8 @@ function MapClickHandler({ onMapClick }: { onMapClick: (e: any) => void }) {
   return null;
 }
 
-// --- メインコンポーネント ---
 function App() {
   const [markers, setMarkers] = useState<any[]>([]);
-  const [categories, setCategories] = useState<string[]>(["飲食店", "作業場所", "観光", "ショッピング", "その他"]);
   const [routes, setRoutes] = useState<any[]>([]);
   const [mode, setMode] = useState<'marker' | 'route' | 'tracking'>('marker');
   
@@ -83,7 +78,6 @@ function App() {
   const watchIdRef = useRef<number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  const [visibleCategories, setVisibleCategories] = useState<string[]>([]);
   const [visibleRoutes, setVisibleRoutes] = useState<string[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isLoaded, setIsLoaded] = useState(false);
@@ -105,8 +99,6 @@ function App() {
       setTrackingPath(path);
       if (path.length > 0) lastLoggedPositionRef.current = path[path.length - 1];
     }
-    
-    setVisibleCategories(["飲食店", "作業場所", "観光", "ショッピング", "その他"]);
     setIsLoaded(true);
 
     if (savedTrackingActive) {
@@ -132,28 +124,46 @@ function App() {
     }
   }, [markers, routes, trackingPath, isLoaded, isTracking]);
 
-  const toggleAudio = (play: boolean) => {
-    if (play) {
-      if (!audioRef.current) {
-        audioRef.current = new Audio(SILENT_AUDIO_BASE64);
-        audioRef.current.loop = true;
+  // --- 改良: バックグラウンド時のみオーディオを再生する ---
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (isTracking) {
+        if (document.visibilityState === 'hidden') {
+          // 隠れたら再生開始
+          playAudio();
+        } else {
+          // 戻ってきたら停止（バッテリー節約）
+          pauseAudio();
+        }
       }
-      audioRef.current.play().catch(e => console.log("Audio play blocked", e));
-    } else if (audioRef.current) {
-      audioRef.current.pause();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [isTracking]);
+
+  const playAudio = () => {
+    if (!audioRef.current) {
+      audioRef.current = new Audio(SILENT_AUDIO_BASE64);
+      audioRef.current.loop = true;
     }
+    audioRef.current.play().catch(() => {});
+  };
+
+  const pauseAudio = () => {
+    if (audioRef.current) audioRef.current.pause();
   };
 
   const startTracking = () => {
     setIsTracking(true);
     localStorage.setItem(STORAGE_KEYS.TRACKING_STATE, 'true');
-    toggleAudio(true);
+    // 最初は画面が出ているはずなので再生しない（隠れた時にuseEffectが反応する）
   };
 
   const stopTracking = () => {
     setIsTracking(false);
     localStorage.setItem(STORAGE_KEYS.TRACKING_STATE, 'false');
-    toggleAudio(false);
+    pauseAudio();
     if (watchIdRef.current !== null) {
       navigator.geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
@@ -164,11 +174,7 @@ function App() {
     if (isTracking) {
       watchIdRef.current = navigator.geolocation.watchPosition(
         (pos) => {
-          // 精度フィルター: 誤差が大きすぎるデータは無視
-          if (pos.coords.accuracy > ACCURACY_THRESHOLD) {
-            console.warn(`Skipped point due to low accuracy: ${pos.coords.accuracy}m`);
-            return;
-          }
+          if (pos.coords.accuracy > ACCURACY_THRESHOLD) return;
 
           const newPos: [number, number] = [pos.coords.latitude, pos.coords.longitude];
           setCurrentPosition(newPos);
@@ -187,7 +193,7 @@ function App() {
             const bearingDiff = lastBearingRef.current !== null 
               ? Math.abs(bearing - lastBearingRef.current) 
               : 0;
-            const isTurning = bearingDiff > ANGLE_THRESHOLD && dist > 10;
+            const isTurning = bearingDiff > ANGLE_THRESHOLD && dist > 15;
 
             if (isFarEnough || isTurning) {
               setTrackingPath(prev => [...prev, newPos]);
@@ -202,7 +208,11 @@ function App() {
           }
         },
         (err) => console.error(err),
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        { 
+          enableHighAccuracy: true, 
+          timeout: 15000, 
+          maximumAge: batterySaving ? 3000 : 0 
+        }
       );
     }
     return () => {
@@ -249,24 +259,21 @@ function App() {
             {mode === 'tracking' && (
               <div className="bg-slate-100 p-3 rounded-xl mb-4 border border-slate-200">
                 <div className="flex justify-between items-center mb-3">
-                  <h3 className="font-bold text-sm flex items-center gap-2"><Zap size={16} className="text-yellow-500"/> スマート追跡</h3>
-                  <button onClick={() => setBatterySaving(!batterySaving)} className={`text-[10px] px-2 py-0.5 rounded-full border ${batterySaving ? 'bg-green-100 border-green-300 text-green-700' : 'bg-slate-200 border-slate-300'}`}>
-                    {batterySaving ? '省電力ON' : '通常モード'}
+                  <h3 className="font-bold text-sm flex items-center gap-2"><Battery size={16} className="text-green-500"/> エコ設定</h3>
+                  <button onClick={() => setBatterySaving(!batterySaving)} className={`text-[10px] px-2 py-0.5 rounded-full border ${batterySaving ? 'bg-green-600 text-white' : 'bg-slate-200'}`}>
+                    {batterySaving ? '省電力モード' : '通常モード'}
                   </button>
                 </div>
                 {!isTracking ? (
-                  <button onClick={startTracking} className="w-full bg-blue-600 text-white py-2 rounded-lg font-bold shadow-lg shadow-blue-200 active:scale-95 transition-all">追跡を開始</button>
+                  <button onClick={startTracking} className="w-full bg-blue-600 text-white py-2 rounded-lg font-bold shadow-lg shadow-blue-200">追跡を開始</button>
                 ) : (
                   <div className="space-y-2">
-                    <button onClick={handleSaveTrack} className="w-full bg-slate-800 text-white py-2 rounded-lg font-bold flex items-center justify-center gap-2"><StopCircle size={18}/> 停止して保存</button>
+                    <button onClick={handleSaveTrack} className="w-full bg-slate-800 text-white py-2 rounded-lg font-bold flex items-center justify-center gap-2">停止して保存</button>
                     <label className="flex items-center justify-center gap-2 text-xs py-1 cursor-pointer">
                       <input type="checkbox" checked={followMe} onChange={e => setFollowMe(e.target.checked)} /> 自動追従
                     </label>
                   </div>
                 )}
-                <div className="mt-2 text-[10px] text-slate-400 text-center">
-                  方向転換と{DISTANCE_THRESHOLD}m以上の移動のみ記録し<br/>バックグラウンドでの動作を維持します。
-                </div>
               </div>
             )}
 
@@ -274,7 +281,7 @@ function App() {
               <h4 className="text-[10px] uppercase font-bold text-slate-400 mb-2 border-b pb-1">保存済み経路</h4>
               <div className="space-y-1">
                 {routes.map(r => (
-                  <div key={r.id} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded text-xs border border-transparent hover:border-slate-100">
+                  <div key={r.id} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded text-xs">
                     <label className="flex items-center gap-2 flex-1 cursor-pointer">
                       <input type="checkbox" checked={visibleRoutes.includes(r.id)} onChange={() => setVisibleRoutes(prev => prev.includes(r.id) ? prev.filter(x => x!==r.id) : [...prev, r.id])} />
                       <div className="flex flex-col truncate">
@@ -287,16 +294,6 @@ function App() {
                 ))}
               </div>
             </div>
-            
-            <div className="pt-4 mt-auto border-t">
-              <button onClick={() => {
-                const data = JSON.stringify({ markers, routes });
-                const blob = new Blob([data], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url; a.download = 'map-data.json'; a.click();
-              }} className="w-full text-xs py-2 bg-slate-100 rounded border border-slate-200 font-bold text-slate-600 flex items-center justify-center gap-2"><Download size={14}/> データをエクスポート</button>
-            </div>
           </div>
         </aside>
 
@@ -305,18 +302,9 @@ function App() {
             <TileLayer attribution="&copy; OpenStreetMap" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
             <SearchControl />
             <ChangeView center={followMe ? currentPosition : null} />
-            
-            {currentPosition && (
-              <Circle center={currentPosition} radius={20} pathOptions={{ fillColor: '#3b82f6', fillOpacity: 0.3, color: '#3b82f6', weight: 1 }} />
-            )}
-
-            {routes.filter(r => visibleRoutes.includes(r.id)).map(r => (
-              <Polyline key={r.id} positions={r.points} color={r.color} weight={4} opacity={0.6} />
-            ))}
-
-            {isTracking && trackingPath.length > 0 && (
-              <Polyline positions={trackingPath} color="#6366f1" weight={5} opacity={0.8} />
-            )}
+            {currentPosition && <Circle center={currentPosition} radius={20} pathOptions={{ fillColor: '#3b82f6', fillOpacity: 0.3, color: '#3b82f6', weight: 1 }} />}
+            {routes.filter(r => visibleRoutes.includes(r.id)).map(r => <Polyline key={r.id} positions={r.points} color={r.color} weight={4} opacity={0.6} />)}
+            {isTracking && trackingPath.length > 0 && <Polyline positions={trackingPath} color="#6366f1" weight={5} opacity={0.8} />}
           </MapContainer>
         </main>
       </div>
