@@ -10,6 +10,7 @@ import './App.css';
 // --- 設定定数 ---
 const DISTANCE_THRESHOLD = 30; // 30メートル移動したら記録検討
 const ANGLE_THRESHOLD = 15;    // 15度以上曲がったら記録
+const ACCURACY_THRESHOLD = 60; // 誤差60m以上のデータは無視（精度フィルター）
 const STORAGE_KEYS = {
   MARKERS: 'map-app-markers',
   CATEGORIES: 'map-app-categories',
@@ -19,7 +20,6 @@ const STORAGE_KEYS = {
 };
 
 // 無音オーディオ（1秒の無音MP3 - Base64形式）
-// これを再生し続けることで、iOS等のブラウザがバックグラウンドでJSを止めるのを抑制します
 const SILENT_AUDIO_BASE64 = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA== ";
 
 // --- ヘルパー関数 ---
@@ -27,7 +27,6 @@ const calculateDistance = (p1: [number, number], p2: [number, number]) => {
   return L.latLng(p1).distanceTo(L.latLng(p2));
 };
 
-// 2つの座標点から方位角を計算
 const getBearing = (p1: [number, number], p2: [number, number]) => {
   const lat1 = p1[0] * Math.PI / 180;
   const lon1 = p1[1] * Math.PI / 180;
@@ -73,7 +72,6 @@ function App() {
   const [routes, setRoutes] = useState<any[]>([]);
   const [mode, setMode] = useState<'marker' | 'route' | 'tracking'>('marker');
   
-  // トラッキング関連
   const [isTracking, setIsTracking] = useState(false);
   const [trackingPath, setTrackingPath] = useState<[number, number][]>([]);
   const [currentPosition, setCurrentPosition] = useState<[number, number] | null>(null);
@@ -85,13 +83,11 @@ function App() {
   const watchIdRef = useRef<number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // UI状態
   const [visibleCategories, setVisibleCategories] = useState<string[]>([]);
   const [visibleRoutes, setVisibleRoutes] = useState<string[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isLoaded, setIsLoaded] = useState(false);
 
-  // 初回読み込みと復旧
   useEffect(() => {
     const savedMarkers = localStorage.getItem(STORAGE_KEYS.MARKERS);
     const savedRoutes = localStorage.getItem(STORAGE_KEYS.ROUTES);
@@ -113,7 +109,6 @@ function App() {
     setVisibleCategories(["飲食店", "作業場所", "観光", "ショッピング", "その他"]);
     setIsLoaded(true);
 
-    // 強制終了からの復旧
     if (savedTrackingActive) {
       setTimeout(() => {
         if (window.confirm("前回の追跡が中断されました。再開しますか？")) {
@@ -127,7 +122,6 @@ function App() {
     }
   }, []);
 
-  // データの自動保存
   useEffect(() => {
     if (isLoaded) {
       localStorage.setItem(STORAGE_KEYS.MARKERS, JSON.stringify(markers));
@@ -138,7 +132,6 @@ function App() {
     }
   }, [markers, routes, trackingPath, isLoaded, isTracking]);
 
-  // バックグラウンド維持用のオーディオ制御
   const toggleAudio = (play: boolean) => {
     if (play) {
       if (!audioRef.current) {
@@ -167,16 +160,20 @@ function App() {
     }
   };
 
-  // スマート・トラッキング ロジック
   useEffect(() => {
     if (isTracking) {
       watchIdRef.current = navigator.geolocation.watchPosition(
         (pos) => {
+          // 精度フィルター: 誤差が大きすぎるデータは無視
+          if (pos.coords.accuracy > ACCURACY_THRESHOLD) {
+            console.warn(`Skipped point due to low accuracy: ${pos.coords.accuracy}m`);
+            return;
+          }
+
           const newPos: [number, number] = [pos.coords.latitude, pos.coords.longitude];
           setCurrentPosition(newPos);
 
           if (!lastLoggedPositionRef.current) {
-            // 開始点の記録
             lastLoggedPositionRef.current = newPos;
             setTrackingPath([newPos]);
             return;
@@ -185,9 +182,7 @@ function App() {
           const dist = calculateDistance(lastLoggedPositionRef.current, newPos);
           
           if (batterySaving) {
-            // 省電力モード: 距離と角度で判定
             const bearing = getBearing(lastLoggedPositionRef.current, newPos);
-            
             const isFarEnough = dist > DISTANCE_THRESHOLD;
             const bearingDiff = lastBearingRef.current !== null 
               ? Math.abs(bearing - lastBearingRef.current) 
@@ -200,7 +195,6 @@ function App() {
               lastBearingRef.current = bearing;
             }
           } else {
-            // 通常モード: 5m以上動いたら全て記録
             if (dist > 5) {
               setTrackingPath(prev => [...prev, newPos]);
               lastLoggedPositionRef.current = newPos;
@@ -216,7 +210,6 @@ function App() {
     };
   }, [isTracking, batterySaving]);
 
-  // 経路の保存
   const handleSaveTrack = () => {
     const name = prompt("経路の名前を入力:", `ログ ${new Date().toLocaleString()}`);
     if (name && trackingPath.length > 1) {
@@ -230,7 +223,6 @@ function App() {
     }
   };
 
-  // その他UI機能（簡略化）
   const formatDistance = (pts: any[]) => {
     let d = 0;
     for (let i = 0; i < pts.length - 1; i++) d += L.latLng(pts[i]).distanceTo(L.latLng(pts[i+1]));
