@@ -4,8 +4,8 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
-export default defineConfig({
-  base: '/map-app/',
+export default defineConfig(({ command }) => ({
+  base: command === 'serve' ? '/' : '/map-app/',
   plugins: [
     react(),
     tailwindcss(),
@@ -57,4 +57,4 @@ export default defineConfig({
       }
     })
   ],
-})
+}))

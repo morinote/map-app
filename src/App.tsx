@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap, Polyline, Circle } from 'react-leaflet';
-import { Trash2, Plus, MapPin, Filter, Menu, X, Save, Tag, Route, Check, Eraser, Download, Upload, Navigation, StopCircle } from 'lucide-react';
+import { Trash2, Plus, MapPin, Filter, Menu, X, Save, Tag, Route, Eraser, Download, Upload, Navigation, StopCircle } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-control-geocoder/dist/Control.Geocoder.css';
