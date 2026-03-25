@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap, Polyline, Circle } from 'react-leaflet';
-import { Trash2, Plus, MapPin, Filter, Menu, X, Save, Tag, Route, Eraser, Download, Upload, Navigation, StopCircle, Battery, Zap } from 'lucide-react';
+import { MapContainer, TileLayer, useMap, Polyline, Circle } from 'react-leaflet';
+import { Trash2, MapPin, Menu, Navigation, Battery, Zap } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-control-geocoder/dist/Control.Geocoder.css';
@@ -52,13 +52,8 @@ function SearchControl() {
     const control = L.Control.geocoder({ placeholder: '検索...', defaultMarkGeocode: false, geocoder })
       .on('markgeocode', (e: any) => map.setView(e.geocode.center, 16))
       .addTo(map);
-    return () => map.removeControl(control);
+    return () => { map.removeControl(control) };
   }, [map]);
-  return null;
-}
-
-function MapClickHandler({ onMapClick }: { onMapClick: (e: any) => void }) {
-  useMapEvents({ click: (e) => onMapClick(e) });
   return null;
 }
 
@@ -80,6 +75,7 @@ function App() {
 
   const [visibleRoutes, setVisibleRoutes] = useState<string[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isMapHidden, setIsMapHidden] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
@@ -156,10 +152,10 @@ function App() {
 
   const startTracking = () => {
     setIsTracking(true);
+    setBatterySaving(true);
     localStorage.setItem(STORAGE_KEYS.TRACKING_STATE, 'true');
     // 最初は画面が出ているはずなので再生しない（隠れた時にuseEffectが反応する）
   };
-
   const stopTracking = () => {
     setIsTracking(false);
     localStorage.setItem(STORAGE_KEYS.TRACKING_STATE, 'false');
@@ -260,7 +256,7 @@ function App() {
               <div className="bg-slate-100 p-3 rounded-xl mb-4 border border-slate-200">
                 <div className="flex justify-between items-center mb-3">
                   <h3 className="font-bold text-sm flex items-center gap-2"><Battery size={16} className="text-green-500"/> エコ設定</h3>
-                  <button onClick={() => setBatterySaving(!batterySaving)} className={`text-[10px] px-2 py-0.5 rounded-full border ${batterySaving ? 'bg-green-600 text-white' : 'bg-slate-200'}`}>
+                  <button onClick={() => setBatterySaving(!batterySaving)} disabled={isTracking} className={`text-[10px] px-2 py-0.5 rounded-full border ${batterySaving ? 'bg-green-600 text-white' : 'bg-slate-200'}`}>
                     {batterySaving ? '省電力モード' : '通常モード'}
                   </button>
                 </div>
@@ -269,9 +265,14 @@ function App() {
                 ) : (
                   <div className="space-y-2">
                     <button onClick={handleSaveTrack} className="w-full bg-slate-800 text-white py-2 rounded-lg font-bold flex items-center justify-center gap-2">停止して保存</button>
-                    <label className="flex items-center justify-center gap-2 text-xs py-1 cursor-pointer">
-                      <input type="checkbox" checked={followMe} onChange={e => setFollowMe(e.target.checked)} /> 自動追従
-                    </label>
+                    <div className="flex flex-col gap-1 mt-2">
+                      <label className="flex items-center gap-2 text-xs cursor-pointer">
+                        <input type="checkbox" checked={followMe} onChange={e => setFollowMe(e.target.checked)} /> 自動追従
+                      </label>
+                      <label className="flex items-center gap-2 text-xs cursor-pointer text-blue-600 font-medium">
+                        <input type="checkbox" checked={isMapHidden} onChange={e => setIsMapHidden(e.target.checked)} /> 地図を非表示 (節電)
+                      </label>
+                    </div>
                   </div>
                 )}
               </div>
@@ -297,15 +298,45 @@ function App() {
           </div>
         </aside>
 
-        <main className="flex-1 relative">
-          <MapContainer center={[35.6812, 139.7671]} zoom={13} className="h-full w-full">
-            <TileLayer attribution="&copy; OpenStreetMap" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-            <SearchControl />
-            <ChangeView center={followMe ? currentPosition : null} />
-            {currentPosition && <Circle center={currentPosition} radius={20} pathOptions={{ fillColor: '#3b82f6', fillOpacity: 0.3, color: '#3b82f6', weight: 1 }} />}
-            {routes.filter(r => visibleRoutes.includes(r.id)).map(r => <Polyline key={r.id} positions={r.points} color={r.color} weight={4} opacity={0.6} />)}
-            {isTracking && trackingPath.length > 0 && <Polyline positions={trackingPath} color="#6366f1" weight={5} opacity={0.8} />}
-          </MapContainer>
+        <main className="flex-1 relative bg-slate-200">
+          {(!isMapHidden || mode !== 'tracking') ? (
+            <MapContainer center={[35.6812, 139.7671]} zoom={13} className="h-full w-full">
+              <TileLayer attribution="&copy; OpenStreetMap" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+              <SearchControl />
+              <ChangeView center={followMe ? currentPosition : null} />
+              {currentPosition && <Circle center={currentPosition} radius={20} pathOptions={{ fillColor: '#3b82f6', fillOpacity: 0.3, color: '#3b82f6', weight: 1 }} />}
+              {routes.filter(r => visibleRoutes.includes(r.id)).map(r => <Polyline key={r.id} positions={r.points} color={r.color} weight={4} opacity={0.6} />)}
+              {isTracking && trackingPath.length > 0 && <Polyline positions={trackingPath} color="#6366f1" weight={5} opacity={0.8} />}
+            </MapContainer>
+          ) : (
+            <div className="h-full w-full flex flex-col items-center justify-center p-6 text-center">
+              <div className="bg-white p-8 rounded-3xl shadow-xl max-w-sm w-full border border-slate-100">
+                <div className="w-20 h-20 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                  <Zap size={40} className={isTracking ? "animate-pulse" : ""} />
+                </div>
+                <h2 className="text-2xl font-bold text-slate-800 mb-2">節電追跡中</h2>
+                <p className="text-slate-500 text-sm mb-6">地図の描画を停止してバッテリーを節約しています。位置情報はバックグラウンドで記録されています。</p>
+                
+                <div className="grid grid-cols-2 gap-4 mb-6">
+                  <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                    <div className="text-[10px] uppercase font-bold text-slate-400 mb-1 text-left">走行距離</div>
+                    <div className="text-xl font-black text-slate-700 text-left">{formatDistance(trackingPath)}</div>
+                  </div>
+                  <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                    <div className="text-[10px] uppercase font-bold text-slate-400 mb-1 text-left">ステータス</div>
+                    <div className="text-xl font-black text-green-600 text-left">{isTracking ? "REC" : "WAIT"}</div>
+                  </div>
+                </div>
+                
+                <button 
+                  onClick={() => setIsMapHidden(false)}
+                  className="w-full py-3 bg-slate-800 text-white rounded-xl font-bold hover:bg-slate-700 transition-colors"
+                >
+                  地図を表示する
+                </button>
+              </div>
+            </div>
+          )}
         </main>
       </div>
     </div>
