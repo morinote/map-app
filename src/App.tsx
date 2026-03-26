@@ -18,6 +18,15 @@ let DefaultIcon = L.icon({
 });
 L.Marker.prototype.options.icon = DefaultIcon;
 
+// ID生成ヘルパー（Secure Context以外や古いブラウザ向けのフォールバック付き）
+const generateId = () => {
+  try {
+    return crypto.randomUUID();
+  } catch (e) {
+    return Date.now().toString(36) + Math.random().toString(36).substring(2);
+  }
+};
+
 // --- 設定定数 ---
 const DISTANCE_THRESHOLD = 30; 
 const ANGLE_THRESHOLD = 15;    
@@ -30,7 +39,7 @@ const STORAGE_KEYS = {
   PENDING_PATH: 'map-app-pending-path'
 };
 
-const SILENT_AUDIO_BASE64 = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA== ";
+const SILENT_AUDIO_BASE64 = "data:audio/wav;base64,UklGRigAAABXQVZFfm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA== ";
 
 const calculateDistance = (p1: [number, number], p2: [number, number]) => {
   return L.latLng(p1).distanceTo(L.latLng(p2));
@@ -96,6 +105,11 @@ function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isMapHidden, setIsMapHidden] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
+  
+  // 新しい状態: 保存ダイアル（モバイル安定性のため）
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [pendingRouteName, setPendingRouteName] = useState('');
+  const [showResumeDialog, setShowResumeDialog] = useState(false);
 
   useEffect(() => {
     const savedMarkers = localStorage.getItem(STORAGE_KEYS.MARKERS);
@@ -117,15 +131,7 @@ function App() {
     setIsLoaded(true);
 
     if (savedTrackingActive) {
-      setTimeout(() => {
-        if (window.confirm("前回の追跡が中断されました。再開しますか？")) {
-          startTracking();
-        } else {
-          localStorage.removeItem(STORAGE_KEYS.TRACKING_STATE);
-          localStorage.removeItem(STORAGE_KEYS.PENDING_PATH);
-          setTrackingPath([]);
-        }
-      }, 1000);
+      setShowResumeDialog(true);
     }
   }, []);
 
@@ -236,33 +242,18 @@ function App() {
   }, [isTracking, batterySaving]);
 
   const handleSaveTrack = () => {
+    setPendingRouteName(`ログ ${new Date().toLocaleString()}`);
+    setShowSaveDialog(true);
+  };
+
+  const confirmSaveTrack = () => {
     if (trackingPath.length <= 1) {
-      if (window.confirm("記録された経路が短すぎます。追跡を終了しますか？")) {
-        stopTracking();
-        setTrackingPath([]);
-        lastLoggedPositionRef.current = null;
-        localStorage.removeItem(STORAGE_KEYS.PENDING_PATH);
-      }
+      discardTrack();
       return;
     }
 
-    const defaultName = `ログ ${new Date().toLocaleString()}`;
-    const name = prompt("経路の名前を入力してください（空欄でデフォルト名）:", defaultName);
-    
-    // キャンセルの場合は確認後に停止
-    if (name === null) {
-      if (window.confirm("保存せずに追跡を停止しますか？（現在の記録は破棄されます）")) {
-        stopTracking();
-        setTrackingPath([]);
-        lastLoggedPositionRef.current = null;
-        localStorage.removeItem(STORAGE_KEYS.PENDING_PATH);
-      }
-      return;
-    }
-
-    // 保存処理
-    const finalName = name.trim() || defaultName;
-    const newRoute = { id: crypto.randomUUID(), name: finalName, points: trackingPath, color: '#6366f1' };
+    const finalName = pendingRouteName.trim() || `ログ ${new Date().toLocaleString()}`;
+    const newRoute = { id: generateId(), name: finalName, points: trackingPath, color: '#6366f1' };
     setRoutes([...routes, newRoute]);
     setVisibleRoutes([...visibleRoutes, newRoute.id]);
     
@@ -271,6 +262,15 @@ function App() {
     setTrackingPath([]);
     lastLoggedPositionRef.current = null;
     localStorage.removeItem(STORAGE_KEYS.PENDING_PATH);
+    setShowSaveDialog(false);
+  };
+
+  const discardTrack = () => {
+    stopTracking();
+    setTrackingPath([]);
+    lastLoggedPositionRef.current = null;
+    localStorage.removeItem(STORAGE_KEYS.PENDING_PATH);
+    setShowSaveDialog(false);
   };
 
   const formatDistance = (pts: any[]) => {
@@ -282,7 +282,7 @@ function App() {
   const handleAddMarker = () => {
     if (newMarkerPos && inputName) {
       const newMarker = {
-        id: crypto.randomUUID(),
+        id: generateId(),
         position: newMarkerPos,
         name: inputName,
         category: "その他",
@@ -446,6 +446,67 @@ function App() {
           )}
         </main>
       </div>
+
+      {/* --- 保存ダイアログ (Mobile用 UI) --- */}
+      {showSaveDialog && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl animate-in fade-in zoom-in duration-200">
+            <h3 className="text-xl font-bold mb-2 flex items-center gap-2">
+              <Navigation className="text-blue-500" size={20} />
+              追跡を停止して保存
+            </h3>
+            
+            {trackingPath.length <= 1 ? (
+              <div className="py-4">
+                <p className="text-slate-600 mb-6">記録された経路が短すぎます。保存せずに終了しますか？</p>
+                <div className="flex flex-col gap-2">
+                  <button onClick={discardTrack} className="w-full py-3 bg-red-600 text-white rounded-xl font-bold">保存せずに終了</button>
+                  <button onClick={() => setShowSaveDialog(false)} className="w-full py-3 bg-slate-100 text-slate-600 rounded-xl font-bold">追跡を続ける</button>
+                </div>
+              </div>
+            ) : (
+              <div className="py-4">
+                <p className="text-slate-500 text-sm mb-4">この経路に名前を付けて保存します。</p>
+                <input 
+                  type="text" 
+                  value={pendingRouteName} 
+                  onChange={(e) => setPendingRouteName(e.target.value)}
+                  className="w-full border-2 border-slate-100 bg-slate-50 rounded-xl px-4 py-3 mb-6 focus:border-blue-500 outline-none font-medium"
+                  placeholder="経路の名前..."
+                  autoFocus
+                />
+                <div className="flex flex-col gap-2">
+                  <button onClick={confirmSaveTrack} className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold shadow-lg shadow-blue-100">名前を付けて保存</button>
+                  <button onClick={discardTrack} className="w-full py-3 text-red-500 font-bold hover:bg-red-50 rounded-xl transition-colors">記録を破棄して終了</button>
+                  <button onClick={() => setShowSaveDialog(false)} className="w-full py-2 text-slate-400 text-sm font-medium">キャンセル（追跡を続行）</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* --- 再開ダイアログ --- */}
+      {showResumeDialog && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl animate-in fade-in zoom-in duration-200">
+            <h3 className="text-xl font-bold mb-2 flex items-center gap-2">
+              <Zap className="text-amber-500" size={20} />
+              追跡の再開
+            </h3>
+            <p className="text-slate-600 mb-6 py-2">前回の追跡が中断されました。記録を再開しますか？</p>
+            <div className="flex flex-col gap-2">
+              <button onClick={() => { startTracking(); setShowResumeDialog(false); }} className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold shadow-lg shadow-blue-100">再開する</button>
+              <button onClick={() => { 
+                localStorage.removeItem(STORAGE_KEYS.TRACKING_STATE);
+                localStorage.removeItem(STORAGE_KEYS.PENDING_PATH);
+                setTrackingPath([]);
+                setShowResumeDialog(false);
+              }} className="w-full py-3 bg-slate-100 text-red-500 font-bold">破棄して終了</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
