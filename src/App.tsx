@@ -236,16 +236,41 @@ function App() {
   }, [isTracking, batterySaving]);
 
   const handleSaveTrack = () => {
-    const name = prompt("経路の名前を入力:", `ログ ${new Date().toLocaleString()}`);
-    if (name && trackingPath.length > 1) {
-      const newRoute = { id: crypto.randomUUID(), name, points: trackingPath, color: '#6366f1' };
-      setRoutes([...routes, newRoute]);
-      setVisibleRoutes([...visibleRoutes, newRoute.id]);
-      setTrackingPath([]);
-      lastLoggedPositionRef.current = null;
-      stopTracking();
-      localStorage.removeItem(STORAGE_KEYS.PENDING_PATH);
+    if (trackingPath.length <= 1) {
+      if (window.confirm("記録された経路が短すぎます。追跡を終了しますか？")) {
+        stopTracking();
+        setTrackingPath([]);
+        lastLoggedPositionRef.current = null;
+        localStorage.removeItem(STORAGE_KEYS.PENDING_PATH);
+      }
+      return;
     }
+
+    const defaultName = `ログ ${new Date().toLocaleString()}`;
+    const name = prompt("経路の名前を入力してください（空欄でデフォルト名）:", defaultName);
+    
+    // キャンセルの場合は確認後に停止
+    if (name === null) {
+      if (window.confirm("保存せずに追跡を停止しますか？（現在の記録は破棄されます）")) {
+        stopTracking();
+        setTrackingPath([]);
+        lastLoggedPositionRef.current = null;
+        localStorage.removeItem(STORAGE_KEYS.PENDING_PATH);
+      }
+      return;
+    }
+
+    // 保存処理
+    const finalName = name.trim() || defaultName;
+    const newRoute = { id: crypto.randomUUID(), name: finalName, points: trackingPath, color: '#6366f1' };
+    setRoutes([...routes, newRoute]);
+    setVisibleRoutes([...visibleRoutes, newRoute.id]);
+    
+    // 状態のリセット
+    stopTracking();
+    setTrackingPath([]);
+    lastLoggedPositionRef.current = null;
+    localStorage.removeItem(STORAGE_KEYS.PENDING_PATH);
   };
 
   const formatDistance = (pts: any[]) => {
@@ -283,7 +308,16 @@ function App() {
           <button onClick={() => setMode('marker')} className={`px-4 py-1 rounded ${mode === 'marker' ? 'bg-blue-600' : ''}`}><MapPin size={14}/></button>
           <button onClick={() => setMode('tracking')} className={`px-4 py-1 rounded ${mode === 'tracking' ? 'bg-blue-600' : ''}`}><Navigation size={14}/></button>
         </div>
-        {isTracking && <div className="text-xs bg-red-600 px-2 py-1 rounded-full animate-pulse">REC {formatDistance(trackingPath)}</div>}
+        {isTracking && (
+          <button 
+            onClick={handleSaveTrack}
+            className="text-xs bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-full animate-pulse transition-colors flex items-center gap-1 border border-red-400 font-bold"
+            title="追跡を停止して保存"
+          >
+            <div className="w-2 h-2 bg-white rounded-full"></div>
+            REC {formatDistance(trackingPath)}
+          </button>
+        )}
       </header>
 
       <div className="flex flex-1 relative overflow-hidden">
@@ -393,12 +427,20 @@ function App() {
                   </div>
                 </div>
                 
-                <button 
-                  onClick={() => setIsMapHidden(false)}
-                  className="w-full py-3 bg-slate-800 text-white rounded-xl font-bold hover:bg-slate-700 transition-colors"
-                >
-                  地図を表示する
-                </button>
+                <div className="flex flex-col gap-3">
+                  <button 
+                    onClick={handleSaveTrack}
+                    className="w-full py-4 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition-colors shadow-lg shadow-red-100 flex items-center justify-center gap-2"
+                  >
+                    停止して保存
+                  </button>
+                  <button 
+                    onClick={() => setIsMapHidden(false)}
+                    className="w-full py-3 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-colors"
+                  >
+                    地図を表示する
+                  </button>
+                </div>
               </div>
             </div>
           )}
