@@ -1,11 +1,22 @@
 import { useState, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, useMap, Polyline, Circle } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap, Polyline, Circle } from 'react-leaflet';
 import { Trash2, MapPin, Menu, Navigation, Battery, Zap } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-control-geocoder/dist/Control.Geocoder.css';
 import 'leaflet-control-geocoder';
 import './App.css';
+
+import markerIcon from 'leaflet/dist/images/marker-icon.png';
+import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+
+let DefaultIcon = L.icon({
+    iconUrl: markerIcon,
+    shadowUrl: markerShadow,
+    iconSize: [25, 41],
+    iconAnchor: [12, 41]
+});
+L.Marker.prototype.options.icon = DefaultIcon;
 
 // --- 設定定数 ---
 const DISTANCE_THRESHOLD = 30; 
@@ -43,6 +54,11 @@ function ChangeView({ center }: { center: [number, number] | null }) {
   return null;
 }
 
+function MapClickHandler({ onMapClick }: { onMapClick: (e: any) => void }) {
+  useMapEvents({ click: (e) => onMapClick(e) });
+  return null;
+}
+
 function SearchControl() {
   const map = useMap();
   useEffect(() => {
@@ -61,6 +77,9 @@ function App() {
   const [markers, setMarkers] = useState<any[]>([]);
   const [routes, setRoutes] = useState<any[]>([]);
   const [mode, setMode] = useState<'marker' | 'route' | 'tracking'>('marker');
+  
+  const [newMarkerPos, setNewMarkerPos] = useState<[number, number] | null>(null);
+  const [inputName, setInputName] = useState('');
   
   const [isTracking, setIsTracking] = useState(false);
   const [trackingPath, setTrackingPath] = useState<[number, number][]>([]);
@@ -235,6 +254,24 @@ function App() {
     return d < 1000 ? `${Math.round(d)}m` : `${(d/1000).toFixed(2)}km`;
   };
 
+  const handleAddMarker = () => {
+    if (newMarkerPos && inputName) {
+      const newMarker = {
+        id: crypto.randomUUID(),
+        position: newMarkerPos,
+        name: inputName,
+        category: "その他",
+      };
+      setMarkers([...markers, newMarker]);
+      setNewMarkerPos(null);
+      setInputName('');
+    }
+  };
+
+  const handleDeleteMarker = (id: string) => {
+    setMarkers(markers.filter(m => m.id !== id));
+  };
+
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-50 text-slate-900 overflow-hidden">
       <header className="bg-slate-900 text-white p-3 flex justify-between items-center shadow-md z-30">
@@ -304,9 +341,37 @@ function App() {
               <TileLayer attribution="&copy; OpenStreetMap" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
               <SearchControl />
               <ChangeView center={followMe ? currentPosition : null} />
+              
+              {mode === 'marker' && <MapClickHandler onMapClick={(e) => setNewMarkerPos([e.latlng.lat, e.latlng.lng])} />}
+
               {currentPosition && <Circle center={currentPosition} radius={20} pathOptions={{ fillColor: '#3b82f6', fillOpacity: 0.3, color: '#3b82f6', weight: 1 }} />}
               {routes.filter(r => visibleRoutes.includes(r.id)).map(r => <Polyline key={r.id} positions={r.points} color={r.color} weight={4} opacity={0.6} />)}
               {isTracking && trackingPath.length > 0 && <Polyline positions={trackingPath} color="#6366f1" weight={5} opacity={0.8} />}
+
+              {mode !== 'tracking' && markers.map((marker) => (
+                <Marker key={marker.id} position={marker.position}>
+                  <Popup>
+                    <div className="p-2 min-w-[150px]">
+                      <h3 className="font-bold text-sm mb-2">{marker.name}</h3>
+                      <button onClick={() => handleDeleteMarker(marker.id)} className="flex items-center justify-center gap-1 w-full bg-red-100 text-red-600 hover:bg-red-200 py-1 rounded text-xs transition-colors">
+                        <Trash2 size={12} /> 削除
+                      </button>
+                    </div>
+                  </Popup>
+                </Marker>
+              ))}
+
+              {mode === 'marker' && newMarkerPos && (
+                <Marker position={newMarkerPos}>
+                  <Popup closeOnClick={false}>
+                    <div className="p-2 min-w-[150px]">
+                      <h3 className="font-bold mb-2 text-blue-600 text-sm">新しい傷（地点）</h3>
+                      <input type="text" value={inputName} onChange={(e) => setInputName(e.target.value)} placeholder="名称..." className="w-full border rounded px-2 py-1 text-sm mb-2 outline-none focus:border-blue-500" autoFocus />
+                      <button onClick={handleAddMarker} disabled={!inputName} className="w-full bg-blue-600 text-white rounded py-1.5 text-xs font-bold disabled:bg-slate-300">防犯登録</button>
+                    </div>
+                  </Popup>
+                </Marker>
+              )}
             </MapContainer>
           ) : (
             <div className="h-full w-full flex flex-col items-center justify-center p-6 text-center">
