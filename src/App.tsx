@@ -93,6 +93,8 @@ function App() {
   const [isTracking, setIsTracking] = useState(false);
   const [trackingPath, setTrackingPath] = useState<[number, number][]>([]);
   const [currentPosition, setCurrentPosition] = useState<[number, number] | null>(null);
+  const [currentAccuracy, setCurrentAccuracy] = useState<number | null>(null);
+  const [gpsError, setGpsError] = useState<string | null>(null);
   const [followMe, setFollowMe] = useState(false);
   const [batterySaving, setBatterySaving] = useState(true);
   
@@ -179,7 +181,17 @@ function App() {
     setIsTracking(true);
     setBatterySaving(true);
     localStorage.setItem(STORAGE_KEYS.TRACKING_STATE, 'true');
-    // 最初は画面が出ているはずなので再生しない（隠れた時にuseEffectが反応する）
+    setGpsError(null);
+    setCurrentAccuracy(null);
+
+    // iOS等でバックグラウンドでのオーディオ再生を許可させるため、ユーザージェスチャー内（ボタンクリック時）で一度再生・即停止を行う
+    if (!audioRef.current) {
+      audioRef.current = new Audio(SILENT_AUDIO_BASE64);
+      audioRef.current.loop = true;
+    }
+    audioRef.current.play().then(() => {
+      audioRef.current?.pause();
+    }).catch((e) => console.log('Audio init failed:', e));
   };
   const stopTracking = () => {
     setIsTracking(false);
@@ -195,10 +207,14 @@ function App() {
     if (isTracking) {
       watchIdRef.current = navigator.geolocation.watchPosition(
         (pos) => {
-          if (pos.coords.accuracy > ACCURACY_THRESHOLD) return;
+          setGpsError(null);
+          setCurrentAccuracy(pos.coords.accuracy);
 
           const newPos: [number, number] = [pos.coords.latitude, pos.coords.longitude];
-          setCurrentPosition(newPos);
+          setCurrentPosition(newPos); // 精度が悪くても現在地の青丸は更新する
+
+          // 記録するための精度チェック
+          if (pos.coords.accuracy > ACCURACY_THRESHOLD) return;
 
           if (!lastLoggedPositionRef.current) {
             lastLoggedPositionRef.current = newPos;
@@ -228,11 +244,18 @@ function App() {
             }
           }
         },
-        (err) => console.error(err),
+        (err) => {
+          console.error(err);
+          let errorMsg = "GPSエラーが発生しました。";
+          if (err.code === err.PERMISSION_DENIED) errorMsg = "位置情報の利用が許可されていません。設定を確認してください。";
+          else if (err.code === err.POSITION_UNAVAILABLE) errorMsg = "位置情報が取得できません。空が見える場所に移動してください。";
+          else if (err.code === err.TIMEOUT) errorMsg = "位置情報の取得がタイムアウトしました。";
+          setGpsError(errorMsg);
+        },
         { 
           enableHighAccuracy: true, 
-          timeout: 15000, 
-          maximumAge: batterySaving ? 3000 : 0 
+          timeout: 20000, 
+          maximumAge: batterySaving ? 5000 : 0 
         }
       );
     }
@@ -336,6 +359,17 @@ function App() {
                 ) : (
                   <div className="space-y-2">
                     <button onClick={handleSaveTrack} className="w-full bg-slate-800 text-white py-2 rounded-lg font-bold flex items-center justify-center gap-2">停止して保存</button>
+                    {gpsError && (
+                      <div className="text-xs text-red-600 bg-red-50 p-2 rounded border border-red-200">
+                        {gpsError}
+                      </div>
+                    )}
+                    {currentAccuracy !== null && (
+                      <div className="text-[10px] text-slate-500 flex justify-between">
+                        <span>GPS精度: {Math.round(currentAccuracy)}m</span>
+                        {currentAccuracy > ACCURACY_THRESHOLD && <span className="text-amber-500 font-bold">待機中</span>}
+                      </div>
+                    )}
                     <div className="flex flex-col gap-1 mt-2">
                       <label className="flex items-center gap-2 text-xs cursor-pointer">
                         <input type="checkbox" checked={followMe} onChange={e => setFollowMe(e.target.checked)} /> 自動追従
