@@ -28,9 +28,9 @@ const generateId = () => {
 };
 
 // --- 設定定数 ---
-const DISTANCE_THRESHOLD = 30; 
+const DISTANCE_THRESHOLD = 15; 
 const ANGLE_THRESHOLD = 15;    
-const ACCURACY_THRESHOLD = 60; 
+const ACCURACY_THRESHOLD = 40; 
 const STORAGE_KEYS = {
   MARKERS: 'map-app-markers',
   CATEGORIES: 'map-app-categories',
@@ -238,7 +238,7 @@ function App() {
               lastBearingRef.current = bearing;
             }
           } else {
-            if (dist > 5) {
+            if (dist > 3) {
               setTrackingPath(prev => [...prev, newPos]);
               lastLoggedPositionRef.current = newPos;
             }
